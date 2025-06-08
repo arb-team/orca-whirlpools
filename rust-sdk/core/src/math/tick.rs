@@ -131,18 +131,23 @@ pub fn get_initializable_tick_index(
     round_up: Option<bool>,
 ) -> i32 {
     let tick_spacing_i32 = tick_spacing as i32;
+    // 余数，非负
     let remainder = tick_index.rem_euclid(tick_spacing_i32);
+    // tick_group_index * spacing
     let result = tick_index.div_euclid(tick_spacing_i32) * tick_spacing_i32;
 
     let should_round_up = if let Some(round_up) = round_up {
         round_up && remainder > 0
     } else {
+        // 四舍五入
         remainder >= tick_spacing_i32 / 2
     };
 
     if should_round_up {
+        // 向上取整
         result + tick_spacing_i32
     } else {
+        // 向下取整
         result
     }
 }
@@ -158,7 +163,9 @@ pub fn get_initializable_tick_index(
 #[cfg_attr(feature = "wasm", wasm_expose)]
 pub fn get_prev_initializable_tick_index(tick_index: i32, tick_spacing: u16) -> i32 {
     let tick_spacing_i32 = tick_spacing as i32;
+    // 余数，结果一定非负
     let remainder = tick_index.rem_euclid(tick_spacing_i32);
+    // 向左移动一个tick
     if remainder == 0 {
         tick_index - tick_spacing_i32
     } else {

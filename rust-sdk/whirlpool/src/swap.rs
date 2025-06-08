@@ -3,7 +3,7 @@ use std::{
     iter::zip,
     time::{SystemTime, UNIX_EPOCH},
 };
-
+use std::str::FromStr;
 use orca_whirlpools_client::{
     get_oracle_address, get_tick_array_address, AccountsType, Oracle, RemainingAccountsInfo,
     RemainingAccountsSlice, SwapV2, SwapV2InstructionArgs, TickArray, Whirlpool,
@@ -118,7 +118,7 @@ async fn fetch_tick_arrays_or_default(
     Ok(result)
 }
 
-async fn fetch_oracle(
+pub async fn fetch_oracle(
     rpc: &RpcClient,
     oracle_address: Pubkey,
     whirlpool: &Whirlpool,

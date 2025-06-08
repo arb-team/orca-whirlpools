@@ -46,9 +46,10 @@ pub fn swap_quote_by_input_token(
     } else {
         (transfer_fee_b, transfer_fee_a)
     };
+    // token2022 fee
     let token_in_after_fee =
         try_apply_transfer_fee(token_in.into(), transfer_fee_in.unwrap_or_default())?;
-
+    // TickArray校验，排序，必须连续
     let tick_sequence = TickArraySequence::new(tick_arrays.into(), whirlpool.tick_spacing)?;
 
     let swap_result = compute_swap(
@@ -228,18 +229,20 @@ pub fn compute_swap<const SIZE: usize>(
     if token_amount == 0 {
         return Err(ZERO_TRADABLE_AMOUNT);
     }
-
+    // 交换后剩余amount
     let mut amount_remaining = token_amount;
+    // 可交换出的amount
     let mut amount_calculated = 0u64;
     let mut current_sqrt_price = whirlpool.sqrt_price;
     let mut current_tick_index = whirlpool.tick_current_index;
     let mut current_liquidity = whirlpool.liquidity;
+    // fee amount
     let mut trade_fee = 0u64;
 
     let base_fee_rate = whirlpool.fee_rate;
     let mut applied_fee_rate_min: Option<u32> = None;
     let mut applied_fee_rate_max: Option<u32> = None;
-
+    // 校验开启自适应fee时，adaptive_fee_info是否传了
     if whirlpool.is_initialized_with_adaptive_fee() != adaptive_fee_info.is_some() {
         return Err(INVALID_ADAPTIVE_FEE_INFO);
     }
@@ -253,11 +256,13 @@ pub fn compute_swap<const SIZE: usize>(
     )?;
 
     while amount_remaining > 0 && sqrt_price_limit != current_sqrt_price {
+        // 下一个有流动性的tick
         let (next_tick, next_tick_index) = if a_to_b {
             tick_sequence.prev_initialized_tick(current_tick_index)?
         } else {
             tick_sequence.next_initialized_tick(current_tick_index)?
         };
+        // 下一个tick对应价格
         let next_tick_sqrt_price: u128 = tick_index_to_sqrt_price(next_tick_index.into()).into();
         let target_sqrt_price = if a_to_b {
             next_tick_sqrt_price.max(sqrt_price_limit)
@@ -266,8 +271,11 @@ pub fn compute_swap<const SIZE: usize>(
         };
 
         loop {
+            // 更新波动累加器
             fee_rate_manager.update_volatility_accumulator();
-
+            // 费率
+            // 静态，静态费率
+            // 动态，费率=静态费率+动态费率，最大10w
             let total_fee_rate = fee_rate_manager.get_total_fee_rate();
             applied_fee_rate_min = Some(
                 applied_fee_rate_min
@@ -292,15 +300,17 @@ pub fn compute_swap<const SIZE: usize>(
                 a_to_b,
                 specified_input,
             )?;
-
+            // 累加fee
             trade_fee += step_quote.fee_amount;
 
             if specified_input {
+                // 扣减需要的amount_in
                 amount_remaining = amount_remaining
                     .checked_sub(step_quote.amount_in)
                     .ok_or(ARITHMETIC_OVERFLOW)?
                     .checked_sub(step_quote.fee_amount)
                     .ok_or(ARITHMETIC_OVERFLOW)?;
+                // 累加amount_out
                 amount_calculated = amount_calculated
                     .checked_add(step_quote.amount_out)
                     .ok_or(ARITHMETIC_OVERFLOW)?;
@@ -314,19 +324,23 @@ pub fn compute_swap<const SIZE: usize>(
                     .checked_add(step_quote.fee_amount)
                     .ok_or(ARITHMETIC_OVERFLOW)?;
             }
-
+            // 当前tick换完了
             if step_quote.next_sqrt_price == next_tick_sqrt_price {
+                // 累加流动性
                 current_liquidity = get_next_liquidity(current_liquidity, next_tick, a_to_b);
+                // 移动tick
                 current_tick_index = if a_to_b {
                     next_tick_index - 1
                 } else {
                     next_tick_index
                 }
-            } else if step_quote.next_sqrt_price != current_sqrt_price {
+            }
+            // 当前tick未换完时，根据价格重新计算当前的tick index
+            else if step_quote.next_sqrt_price != current_sqrt_price {
                 current_tick_index =
                     sqrt_price_to_tick_index(step_quote.next_sqrt_price.into()).into();
             }
-
+            // 修改价格
             current_sqrt_price = step_quote.next_sqrt_price;
 
             if !adaptive_fee_update_skipped {
@@ -358,7 +372,7 @@ pub fn compute_swap<const SIZE: usize>(
     } else {
         swapped_amount
     };
-
+    // 价格变动剧烈时记录下时间
     fee_rate_manager.update_major_swap_timestamp(
         timestamp,
         whirlpool.sqrt_price,
@@ -422,7 +436,7 @@ fn compute_swap_step(
     );
     let is_initial_amount_fixed_overflow =
         initial_amount_fixed_delta == Err(AMOUNT_EXCEEDS_MAX_U64);
-
+    // 扣减fee
     let amount_calculated = if specified_input {
         try_apply_swap_fee(amount_remaining.into(), fee_rate)?
     } else {
@@ -431,8 +445,10 @@ fn compute_swap_step(
 
     let next_sqrt_price =
         if !is_initial_amount_fixed_overflow && initial_amount_fixed_delta? <= amount_calculated {
+            // 可以把当前tick换完
             target_sqrt_price
         } else {
+            // 换不完计算剩余amount可以达到的价格
             try_get_next_sqrt_price(
                 current_sqrt_price,
                 current_liquidity,
@@ -441,9 +457,9 @@ fn compute_swap_step(
                 specified_input,
             )?
         };
-
+    // 当前tick换完了
     let is_max_swap = next_sqrt_price == target_sqrt_price;
-
+    // 换出amount
     let amount_unfixed_delta = try_get_amount_unfixed_delta(
         current_sqrt_price,
         next_sqrt_price,
@@ -454,6 +470,7 @@ fn compute_swap_step(
 
     // If the swap is not at the max, we need to readjust the amount of the fixed token we are using
     let amount_fixed_delta = if !is_max_swap || is_initial_amount_fixed_overflow {
+        // 换不完时，根据价格重新计算下需要多少amount
         try_get_amount_fixed_delta(
             current_sqrt_price,
             next_sqrt_price,
@@ -476,12 +493,15 @@ fn compute_swap_step(
         amount_out = amount_remaining;
     }
 
-    let fee_amount = if specified_input && !is_max_swap {
-        amount_remaining - amount_in
-    } else {
-        let pre_fee_amount = try_reverse_apply_swap_fee(amount_in.into(), fee_rate)?;
-        pre_fee_amount - amount_in
-    };
+    let fee_amount =
+        // 没换完的话剩下的都是fee
+        if specified_input && !is_max_swap {
+            amount_remaining - amount_in
+        } else {
+            // 当前tick需要的fee
+            let pre_fee_amount = try_reverse_apply_swap_fee(amount_in.into(), fee_rate)?;
+            pre_fee_amount - amount_in
+        };
 
     Ok(SwapStepQuote {
         amount_in,

@@ -21,13 +21,15 @@ impl<const SIZE: usize> TickArraySequence<SIZE> {
         tick_spacing: u16,
     ) -> Result<Self, CoreError> {
         let mut tick_arrays = tick_arrays;
+        // 按照index排序，从小到大
         tick_arrays.sort_by_key(start_tick_index);
 
         if tick_arrays.is_empty() || tick_arrays[0].is_none() {
             return Err(TICK_SEQUENCE_EMPTY);
         }
-
+        // 一个TickArray的index总大小
         let required_tick_array_spacing = TICK_ARRAY_SIZE as i32 * tick_spacing as i32;
+        // 校验TickArray是否是连续的，None的跳过
         for i in 0..tick_arrays.len() - 1 {
             let current_start_tick_index = start_tick_index(&tick_arrays[i]);
             let next_start_tick_index = start_tick_index(&tick_arrays[i + 1]);
@@ -71,6 +73,9 @@ impl<const SIZE: usize> TickArraySequence<SIZE> {
         }
         let first_index = start_tick_index(&self.tick_arrays[0]);
         let tick_array_index = ((tick_index - first_index)
+            // TICK_ARRAY_SIZE物理上对Tick分组组成一个TickArray
+            // tick_group_size逻辑上对Tick分组，用于计算自适应费率
+            // 维度不同
             / (TICK_ARRAY_SIZE as i32 * self.tick_spacing as i32))
             as usize;
         let tick_array_start_index = start_tick_index(&self.tick_arrays[tick_array_index]);
@@ -116,6 +121,7 @@ impl<const SIZE: usize> TickArraySequence<SIZE> {
             if prev_index < array_start_index {
                 return Ok((None, array_start_index));
             }
+            // 当前index对应的tick
             let tick = self.tick(prev_index)?;
             if tick.initialized {
                 return Ok((Some(tick), prev_index));

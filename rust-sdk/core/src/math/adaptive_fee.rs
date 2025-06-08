@@ -46,7 +46,9 @@ impl FeeRateManager {
         adaptive_fee_info: &Option<AdaptiveFeeInfo>,
     ) -> Result<Self, CoreError> {
         match adaptive_fee_info {
+            // 未开启自适应费率，使用池子上的基础费率
             None => Ok(Self::Static { static_fee_rate }),
+            // 开启自适应费率
             Some(adaptive_fee_info) => {
                 let tick_group_index = floor_division(
                     current_tick_index,
@@ -65,12 +67,15 @@ impl FeeRateManager {
                 // max_volatility_accumulator < volatility_reference + tick_group_index_delta * VOLATILITY_ACCUMULATOR_SCALE_FACTOR
                 // -> ceil((max_volatility_accumulator - volatility_reference) / VOLATILITY_ACCUMULATOR_SCALE_FACTOR) < tick_group_index_delta
                 // From the above, if tick_group_index_delta is sufficiently large, volatility_accumulator always sticks to max_volatility_accumulator
+                // 计算当前达到最大波动需要的tick_group_inex数量
                 let max_volatility_accumulator_tick_group_index_delta = ceil_division_u32(
                     adaptive_fee_constants.max_volatility_accumulator
                         - adaptive_fee_variables.volatility_reference,
                     VOLATILITY_ACCUMULATOR_SCALE_FACTOR as u32,
                 );
-
+                // 确定核心范围，
+                // 不在核心范围内的，tick不再重复计算，因为波动累加器是一样的，费率不变
+                // 在核心范围内就需要循环计算波动累加器了，费率也会随之变化
                 // we need to calculate the adaptive fee rate for each tick_group_index in the range of core tick group
                 let core_tick_group_range_lower_index = adaptive_fee_variables
                     .tick_group_index_reference
@@ -83,7 +88,7 @@ impl FeeRateManager {
                 let core_tick_group_range_upper_bound_tick_index = core_tick_group_range_upper_index
                     * adaptive_fee_constants.tick_group_size as i32
                     + adaptive_fee_constants.tick_group_size as i32;
-
+                // 范围下限
                 let core_tick_group_range_lower_bound =
                     if core_tick_group_range_lower_bound_tick_index > MIN_TICK_INDEX {
                         Some((
@@ -94,6 +99,7 @@ impl FeeRateManager {
                     } else {
                         None
                     };
+                // 范围上限
                 let core_tick_group_range_upper_bound =
                     if core_tick_group_range_upper_bound_tick_index < MAX_TICK_INDEX {
                         Some((
@@ -193,12 +199,14 @@ impl FeeRateManager {
             } => {
                 let (tick_index, is_on_tick_group_boundary) = if sqrt_price == next_tick_sqrt_price
                 {
+                    // 还没到下个tick
                     // next_tick_index = tick_index_from_sqrt_price(&sqrt_price) is true,
                     // but we use next_tick_index to reduce calculations in the middle of the loop
                     let is_on_tick_group_boundary =
                         next_tick_index % adaptive_fee_constants.tick_group_size as i32 == 0;
                     (next_tick_index, is_on_tick_group_boundary)
                 } else {
+                    // 价格不一样表示已经移动tick了，根据价格重新计算tick_index
                     // End of the swap loop or the boundary of core tick group range.
 
                     // Note: It was pointed out during the review that using curr_tick_index may suppress tick_index_from_sqrt_price.
@@ -211,7 +219,7 @@ impl FeeRateManager {
                             && sqrt_price == sqrt_price_from_tick_index;
                     (tick_index, is_on_tick_group_boundary)
                 };
-
+                // 计算swap后落在哪个tick_group上
                 let last_traversed_tick_group_index = if is_on_tick_group_boundary && !*a_to_b {
                     // tick_index is on tick group boundary, so this division is safe
                     tick_index / adaptive_fee_constants.tick_group_size as i32 - 1
@@ -248,10 +256,11 @@ impl FeeRateManager {
                 adaptive_fee_variables,
                 ..
             } => {
+                // 动态费率
                 let adaptive_fee_rate =
                     Self::compute_adaptive_fee_rate(adaptive_fee_constants, adaptive_fee_variables);
                 let total_fee_rate = *static_fee_rate as u32 + adaptive_fee_rate;
-
+                
                 if total_fee_rate > FEE_RATE_HARD_LIMIT {
                     FEE_RATE_HARD_LIMIT
                 } else {
@@ -291,7 +300,7 @@ impl FeeRateManager {
                 if curr_liquidity == 0 {
                     return (sqrt_price, true);
                 }
-
+                // 不在核心范围内的，会一直使用最大波动累加值计算费率
                 // If the tick group index is out of the core tick group range (lower side),
                 // the range where volatility_accumulator is always max_volatility_accumulator can be skipped.
                 if let Some((lower_tick_group_index, lower_tick_group_bound_sqrt_price)) =
@@ -323,7 +332,7 @@ impl FeeRateManager {
                         }
                     }
                 }
-
+                // 在核心范围内
                 let boundary_tick_index = if *a_to_b {
                     *tick_group_index * adaptive_fee_constants.tick_group_size as i32
                 } else {
@@ -389,10 +398,12 @@ impl AdaptiveFeeVariablesFacade {
         tick_group_index: i32,
         adaptive_fee_constants: &AdaptiveFeeConstantsFacade,
     ) {
+        // tick_group_index_reference 高频交易时是之前的
+        // 非高频交易时，第一次循环时和参数tick_group_index相同，本次swap跨越多个tick_group时累加
         let index_delta = (self.tick_group_index_reference - tick_group_index).unsigned_abs();
         let volatility_accumulator = u64::from(self.volatility_reference)
             + u64::from(index_delta) * u64::from(VOLATILITY_ACCUMULATOR_SCALE_FACTOR);
-
+        // 避免累加器过大
         self.volatility_accumulator = std::cmp::min(
             volatility_accumulator,
             u64::from(adaptive_fee_constants.max_volatility_accumulator),
@@ -408,11 +419,13 @@ impl AdaptiveFeeVariablesFacade {
         let max_timestamp = self
             .last_reference_update_timestamp
             .max(self.last_major_swap_timestamp);
+        // 不能小于上一次的交易时间
         if current_timestamp < max_timestamp {
             return Err(INVALID_TIMESTAMP);
         }
-
+        // 当前时间和上一交易时间差
         let reference_age = current_timestamp - self.last_reference_update_timestamp;
+        // 超过一小时重置，避免长时间高费率
         if reference_age > MAX_REFERENCE_AGE {
             // The references are too old, so reset them
             self.tick_group_index_reference = tick_group_index;
@@ -422,6 +435,7 @@ impl AdaptiveFeeVariablesFacade {
         }
 
         let elapsed = current_timestamp - max_timestamp;
+        // 高频交易
         if elapsed < adaptive_fee_constants.filter_period as u64 {
             // high frequency trade
             // no change

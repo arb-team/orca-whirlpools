@@ -1,3 +1,4 @@
+use std::str::FromStr;
 use crate::generated::programs::WHIRLPOOL_ID;
 use solana_program::program_error::ProgramError;
 use solana_program::pubkey::Pubkey;
